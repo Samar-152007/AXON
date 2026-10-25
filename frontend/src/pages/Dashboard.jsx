@@ -1053,18 +1053,29 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
         onClose={() => setIsExpiryScannerOpen(false)}
         onExpiryDetected={(date, meta) => {
           setScannedExpiryDate(date);
+          const scannedName = meta?.name || '';
           if (showToast) {
-            showToast(`Product expiry date captured: ${date}`, 'success');
+            showToast(
+              scannedName 
+                ? `Scanned: ${scannedName} (Exp: ${date || 'No Date'})` 
+                : `Product expiry date captured: ${date}`, 
+              'success'
+            );
           }
           if (candidates.length > 0) {
             setCandidates((prev) =>
-              prev.map((c) => (c.selected && !c.expiry_date ? { ...c, expiry_date: date } : c))
+              prev.map((c) => (c.selected ? { 
+                ...c, 
+                name: scannedName && (!c.name || c.name === 'Item') ? scannedName : c.name,
+                expiry_date: date || c.expiry_date 
+              } : c))
             );
             if (showToast) {
-              showToast(`Applied expiry date (${date}) to selected candidate item(s).`, 'success');
+              showToast(`Applied package details to selected candidate item(s).`, 'success');
             }
           } else if (onOpenAddItem) {
             onOpenAddItem({
+              name: scannedName,
               expiry_date: date,
               notes: meta?.wasManuallyCompleted 
                 ? 'Scanned via camera OCR (Manually verified).' 

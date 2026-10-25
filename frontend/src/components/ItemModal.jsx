@@ -385,7 +385,8 @@ export default function ItemModal({ isOpen, onClose, onSave, itemToEdit = null }
         onExpiryDetected={(detectedDate, meta) => {
           setFormData((prev) => ({
             ...prev,
-            expiry_date: detectedDate,
+            name: meta?.name ? meta.name : prev.name,
+            expiry_date: detectedDate || prev.expiry_date,
             hasNoExpiry: false
           }));
           setScannedMeta(meta);
