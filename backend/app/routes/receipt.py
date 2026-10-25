@@ -29,17 +29,25 @@ class ExtractedCandidate(BaseModel):
 class ReceiptConfirmRequest(BaseModel):
     items: List[ItemCreate]
 
-def parse_receipt_lines(text: str) -> List[Dict[str, Any]]:
+def parse_receipt_lines(text: str) -> Dict[str, Any]:
     """
-    Parses typical receipt line formats:
-    - "1 Milk Gallon $3.89"
-    - "Organic Spinach 2.49"
-    - "2x Sourdough Bread 5.50"
-    - "Apples 3.20"
+    Parses receipt text without hallucinating fake data.
+    Explicitly flags missing fields (e.g. missing prices, unconfirmed categories)
+    and extracts receipt dates if present.
     """
     candidates = []
     lines = text.strip().split("\n")
+    detected_receipt_date = None
     
+    # 1. Check for printed receipt date (e.g. "Date: 2026-10-25" or "10/25/2026")
+    date_match = re.search(r"\b(20\d{2})[\/\-\.](0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])\b", text)
+    if date_match:
+        detected_receipt_date = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
+    else:
+        date_alt_match = re.search(r"\b(0?[1-9]|1[0-2])[\/\-\.](0?[1-9]|[12]\d|3[01])[\/\-\.](20\d{2})\b", text)
+        if date_alt_match:
+            detected_receipt_date = f"{date_alt_match.group(3)}-{date_alt_match.group(1).zfill(2)}-{date_alt_match.group(2).zfill(2)}"
+
     # Common categories dictionary for auto-tagging
     cat_hints = {
         "milk": "Dairy", "cheese": "Dairy", "yogurt": "Dairy", "butter": "Dairy", "cream": "Dairy",
@@ -77,11 +85,13 @@ def parse_receipt_lines(text: str) -> List[Dict[str, Any]]:
         # Look for leading quantity: e.g. "2x ", "2 ", "3 @ "
         qty = 1.0
         unit = "units"
+        qty_inferred = True
         qty_match = re.match(r"^(\d+(?:\.\d+)?)\s*(?:x|@|\*|-)?\s+(.*)", name_part, re.IGNORECASE)
         if qty_match:
             try:
                 qty = float(qty_match.group(1))
                 name_part = qty_match.group(2).strip()
+                qty_inferred = False
             except ValueError:
                 pass
 
@@ -93,10 +103,25 @@ def parse_receipt_lines(text: str) -> List[Dict[str, Any]]:
 
         # Detect category hint
         detected_category = "Other"
+        category_matched = False
         for hint, cat in cat_hints.items():
             if hint in name_part.lower():
                 detected_category = cat
+                category_matched = True
                 break
+
+        # Check for missing/incomplete fields
+        missing_fields = []
+        if price is None:
+            missing_fields.append("unit_price")
+        if qty_inferred:
+            missing_fields.append("quantity")
+        if not category_matched:
+            missing_fields.append("category")
+        missing_fields.append("expiry_date")  # Expiry date is always unconfirmed on standard receipts
+
+        is_incomplete = bool(price is None or len(name_part) < 3)
+        confidence = "Complete" if (price is not None and not is_incomplete and category_matched) else ("Incomplete" if price is None else "Moderate")
 
         candidates.append({
             "name": name_part.title(),
@@ -105,10 +130,17 @@ def parse_receipt_lines(text: str) -> List[Dict[str, Any]]:
             "category": detected_category,
             "unit_price": price,
             "price": price,
-            "confidence": "High" if price else "Moderate"
+            "expiry_date": None,
+            "is_incomplete": is_incomplete,
+            "missing_fields": missing_fields,
+            "confidence": confidence
         })
 
-    return candidates
+    return {
+        "candidates": candidates,
+        "detected_receipt_date": detected_receipt_date,
+        "has_incomplete_items": any(c["is_incomplete"] for c in candidates)
+    }
 
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB maximum
 ALLOWED_IMAGE_MIMETYPES = {
@@ -196,7 +228,17 @@ async def extract_receipt(request: Request):
             detail=f"Receipt text is too long (maximum {MAX_RAW_TEXT_LENGTH} characters allowed)."
         )
 
-    candidates = parse_receipt_lines(extracted_text)
+    parsed_res = parse_receipt_lines(extracted_text)
+    candidates = parsed_res["candidates"]
+    detected_date = parsed_res["detected_receipt_date"]
+    has_incomplete = parsed_res["has_incomplete_items"]
+
+    incomplete_count = sum(1 for c in candidates if c.get("is_incomplete"))
+    msg = f"Parsed {len(candidates)} candidate item(s)."
+    if incomplete_count > 0:
+        msg += f" Notice: {incomplete_count} item(s) contain incomplete information (missing price or details). Review highlighted fields before saving."
+    else:
+        msg += " Please review and confirm before adding to inventory."
 
     return {
         "success": True,
@@ -205,13 +247,17 @@ async def extract_receipt(request: Request):
         "candidates": candidates,
         "items": candidates,
         "count": len(candidates),
-        "message": f"Successfully parsed {len(candidates)} candidate item(s). Please review and confirm before adding to inventory."
+        "detected_receipt_date": detected_date,
+        "has_incomplete_items": has_incomplete,
+        "incomplete_count": incomplete_count,
+        "message": msg
     }
 
 @router.post("/confirm")
 def confirm_receipt_items(payload: ReceiptConfirmRequest):
     """
     Saves confirmed receipt items into inventory.
+    Requires validated, non-empty grocery names.
     """
     if not payload.items:
         raise HTTPException(status_code=400, detail="No items to confirm")
@@ -220,22 +266,29 @@ def confirm_receipt_items(payload: ReceiptConfirmRequest):
     with get_db() as conn:
         cursor = conn.cursor()
         for item in payload.items:
-            norm = normalize_grocery_name(item.name)
+            clean_name = (item.name or "").strip()
+            if not clean_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Incomplete information: Every item must have a valid grocery name before saving."
+                )
+
+            norm = normalize_grocery_name(clean_name)
             u_price = item.unit_price if item.unit_price is not None else item.price
             cursor.execute("""
                 INSERT INTO items (name, normalized_name, quantity, unit, category, unit_price, price, purchase_date, expiry_date, notes, status, is_sample)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0)
             """, (
-                item.name,
+                clean_name,
                 norm,
-                item.quantity,
-                item.unit,
-                item.category,
+                item.quantity if item.quantity and item.quantity > 0 else 1.0,
+                item.unit or "units",
+                item.category or "Other",
                 u_price,
                 u_price,
                 item.purchase_date or date.today().isoformat(),
                 item.expiry_date,
-                item.notes or "Imported from receipt.",
+                item.notes or "Imported from receipt scan.",
             ))
             new_id = cursor.lastrowid
             cursor.execute("SELECT * FROM items WHERE id = ?", (new_id,))

@@ -2,13 +2,8 @@
  * dateParser.js
  * 
  * Extracts common grocery product expiry date patterns from OCR raw text.
- * Supports formats like:
- * - MM/YY, MM/YYYY (e.g. "12/25", "08/2026")
- * - DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY (e.g. "25/10/2026", "15-11-2025")
- * - Prefixed patterns: "EXP 12/25", "EXPIRY: 2026-11-30", "Use By: Oct 2026", "BB 15 NOV 26"
- * - Month name patterns: "25 Oct 2026", "Oct 2026", "Nov 25"
- * 
- * Returns standardized ISO formatted string 'YYYY-MM-DD' and Date object.
+ * Distinguishes between complete dates, partial/incomplete detections, and unreadable text.
+ * Never invents fake dates. Clearly flags missing components (e.g. missing day, partial year).
  */
 
 const MONTH_MAP = {
@@ -41,18 +36,20 @@ function normalizeYear(yearStr) {
 }
 
 /**
- * Returns formatted 'YYYY-MM-DD' and Date object from components.
+ * Returns structured date result with explicit completeness and confidence metadata.
  */
-function createDateResult(year, month, day = null, rawMatch = '') {
+function createDateResult(year, month, day = null, rawMatch = '', hasPrefix = false) {
   const normYear = normalizeYear(year);
   const normMonth = Math.min(Math.max(parseInt(month, 10), 1), 12);
-  
-  // If day is missing (e.g. "Oct 2026" or "12/25"), set to the last day of that month
+  const hasExactDay = day !== null && day !== undefined && String(day).trim() !== '';
+
+  // If day is missing (e.g. "Oct 2026" or "12/25"), we calculate end of month as a suggestion,
+  // but explicitly flag that the day is incomplete / inferred so the user is prompted to confirm or adjust.
   let normDay;
-  if (day) {
+  if (hasExactDay) {
     normDay = Math.min(Math.max(parseInt(day, 10), 1), 31);
   } else {
-    // End of month
+    // End of month recommendation
     normDay = new Date(normYear, normMonth, 0).getDate();
   }
 
@@ -61,27 +58,40 @@ function createDateResult(year, month, day = null, rawMatch = '') {
   const formatted = `${normYear}-${mm}-${dd}`;
   const dateObj = new Date(normYear, normMonth - 1, normDay);
 
+  const isComplete = hasExactDay;
+  const confidence = isComplete 
+    ? (hasPrefix ? 'HIGH' : 'MEDIUM') 
+    : 'PARTIAL';
+
   return {
     formatted,
     date: dateObj,
     year: normYear,
     month: normMonth,
     day: normDay,
-    rawMatch
+    hasExactDay,
+    isComplete,
+    confidence,
+    missingFields: hasExactDay ? [] : ['day'],
+    rawMatch,
+    hasPrefix,
+    notice: isComplete 
+      ? null 
+      : `Incomplete date: Month (${mm}) and Year (${normYear}) detected without day. End-of-month suggested (${formatted}) — please confirm or adjust.`
   };
 }
 
 /**
  * Main parsing helper function
- * Takes raw string from OCR and searches for expiry date expressions.
+ * Analyzes OCR text and returns detailed complete/incomplete evaluation.
  * 
  * @param {string} rawText - Unstructured text from Tesseract OCR
- * @returns {object|null} - { formatted: 'YYYY-MM-DD', date: Date, rawMatch: string } or null
+ * @returns {object|null} - Result object with completeness flags, or null if text is empty
  */
 export function parseExpiryDate(rawText) {
-  if (!rawText || typeof rawText !== 'string') return null;
+  if (!rawText || typeof rawText !== 'string' || !rawText.trim()) return null;
 
-  const cleanText = rawText.replace(/\r\n/g, ' ').replace(/\n/g, ' ');
+  const cleanText = rawText.replace(/\r\n/g, ' ').replace(/\n/g, ' ').trim();
 
   // 1. Check explicitly prefixed expiry dates first (EXP, USE BY, BEST BEFORE, BB)
   // 1a. Text month with prefix: e.g. "Use By: 25 Oct 2026", "EXP Oct 2026", "BB 15-NOV-2026"
@@ -100,7 +110,7 @@ export function parseExpiryDate(rawText) {
     const year = prefTextMatch[3];
     const month = MONTH_MAP[monthStr];
     if (month && year) {
-      return createDateResult(year, month, day, prefTextMatch[0]);
+      return createDateResult(year, month, day, prefTextMatch[0], true);
     }
   }
 
@@ -108,7 +118,7 @@ export function parseExpiryDate(rawText) {
   const prefixedIsoRegex = /(?:EXP(?:IRY)?|USE\s*BY|BEST\s*(?:BEFORE|BY)|BB|BBD)[\s:\-\/]+(20\d{2})[\/\-\.](0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])\b/i;
   const prefIsoMatch = cleanText.match(prefixedIsoRegex);
   if (prefIsoMatch) {
-    return createDateResult(prefIsoMatch[1], prefIsoMatch[2], prefIsoMatch[3], prefIsoMatch[0]);
+    return createDateResult(prefIsoMatch[1], prefIsoMatch[2], prefIsoMatch[3], prefIsoMatch[0], true);
   }
 
   // 1c. Prefixed numeric patterns: e.g. "EXP 12/25", "EXP. 12/2026", "USE BY: 25/10/2026", "BEST BEFORE 28.02.26"
@@ -122,18 +132,17 @@ export function parseExpiryDate(rawText) {
     if (part3) {
       // Format: DD/MM/YYYY or MM/DD/YYYY
       if (parseInt(part1, 10) > 12) {
-        return createDateResult(part3, part2, part1, prefixMatch[0]);
+        return createDateResult(part3, part2, part1, prefixMatch[0], true);
       } else {
-        return createDateResult(part3, part2, part1, prefixMatch[0]);
+        return createDateResult(part3, part1, part2, prefixMatch[0], true);
       }
     } else {
-      // Format: MM/YY or MM/YYYY (e.g. 12/25)
-      return createDateResult(part2, part1, null, prefixMatch[0]);
+      // Format: MM/YY or MM/YYYY (day is incomplete)
+      return createDateResult(part2, part1, null, prefixMatch[0], true);
     }
   }
 
-  // 2. Unprefixed dates fallback (in case label simply displays the date without prefix)
-  // 2a. Standalone Textual month format: e.g. "25 Oct 2026", "Oct 2026"
+  // 2. Standalone Textual month format: e.g. "25 Oct 2026", "Oct 2026"
   const standaloneTextMonthRegex = new RegExp(
     `(?:(\\d{1,2})[\\s\\.\\-\\/]+)?` +
     `(${MONTH_NAMES_PATTERN})` +
@@ -148,32 +157,62 @@ export function parseExpiryDate(rawText) {
     const year = textMatch[3];
     const month = MONTH_MAP[monthStr];
     if (month && year) {
-      return createDateResult(year, month, day, textMatch[0]);
+      return createDateResult(year, month, day, textMatch[0], false);
     }
   }
 
-  // 2b. Standalone ISO Date format: e.g. "2026-10-25" or "2026/10/25"
+  // 3. Standalone ISO Date: e.g. "2026-10-25" or "2026/10/25"
   const isoRegex = /\b(20\d{2})[\/\-\.](0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])\b/;
   const isoMatch = cleanText.match(isoRegex);
   if (isoMatch) {
-    return createDateResult(isoMatch[1], isoMatch[2], isoMatch[3], isoMatch[0]);
+    return createDateResult(isoMatch[1], isoMatch[2], isoMatch[3], isoMatch[0], false);
   }
 
-  // 2c. Standalone Full Date: DD/MM/YYYY or DD-MM-YYYY
+  // 4. Standalone Full Date: DD/MM/YYYY or DD-MM-YYYY
   const fullDateRegex = /\b(0?[1-9]|[12]\d|3[01])[\/\.\-](0?[1-9]|1[0-2])[\/\.\-](20\d{2}|\d{2})\b/;
   const fullDateMatch = cleanText.match(fullDateRegex);
   if (fullDateMatch) {
-    return createDateResult(fullDateMatch[3], fullDateMatch[2], fullDateMatch[1], fullDateMatch[0]);
+    return createDateResult(fullDateMatch[3], fullDateMatch[2], fullDateMatch[1], fullDateMatch[0], false);
   }
 
-  // 2d. Standalone MM/YY or MM/YYYY: e.g. "12/25", "08/26", "11/2026"
+  // 5. Standalone MM/YY or MM/YYYY: e.g. "12/25", "08/26", "11/2026"
   const shortDateRegex = /\b(0[1-9]|1[0-2])[\/\.\-](20\d{2}|2\d|3\d)\b/;
   const shortDateMatch = cleanText.match(shortDateRegex);
   if (shortDateMatch) {
-    return createDateResult(shortDateMatch[2], shortDateMatch[1], null, shortDateMatch[0]);
+    return createDateResult(shortDateMatch[2], shortDateMatch[1], null, shortDateMatch[0], false);
   }
 
-  return null;
+  // 6. Partial Fragment Detection: Look for lone EXP header or Year only
+  const partialYearRegex = /(?:EXP(?:IRY)?|USE\s*BY|BEST\s*(?:BEFORE|BY)|BB)\s*[:\-\/]?\s*(202\d|203\d)\b/i;
+  const partialYearMatch = cleanText.match(partialYearRegex);
+  if (partialYearMatch) {
+    const y = parseInt(partialYearMatch[1], 10);
+    return {
+      formatted: `${y}-12-31`,
+      year: y,
+      month: null,
+      day: null,
+      hasExactDay: false,
+      isComplete: false,
+      isPartial: true,
+      confidence: 'LOW',
+      missingFields: ['month', 'day'],
+      rawMatch: partialYearMatch[0],
+      notice: `Incomplete date: Year ${y} found, but month and day are missing. Please complete below.`
+    };
+  }
+
+  // 7. No recognizable date pattern found in raw text
+  return {
+    formatted: null,
+    date: null,
+    isComplete: false,
+    confidence: 'NONE',
+    missingFields: ['year', 'month', 'day'],
+    rawMatch: '',
+    rawSnippet: cleanText.length > 80 ? cleanText.slice(0, 80) + '...' : cleanText,
+    notice: 'Insufficient date data: No legible expiry pattern found in scanned text.'
+  };
 }
 
 export default parseExpiryDate;

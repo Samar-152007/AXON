@@ -213,24 +213,6 @@ export default function VirtualizedDataList({
     }
   }, [lastVirtualItem, hasMore, isFetchingNextPage, isLoading, items.length, fetchChunk]);
 
-  // Demo fallback generator if local Supabase table is not currently populated
-  const handleLoadDemoSimulation = () => {
-    setIsLoading(true);
-    setError(null);
-    setTimeout(() => {
-      const mockBatch = Array.from({ length: 50 }, (_, i) => ({
-        id: items.length + i + 1,
-        name: `Simulated Record Item #${items.length + i + 1}`,
-        category: ['Produce', 'Bakery', 'Dairy', 'Pantry', 'Meat'][i % 5],
-        quantity: ((i % 4) + 1) * 2,
-        unit_price: 45 + (i * 3.5),
-        created_at: new Date().toISOString()
-      }));
-      setItems((prev) => [...prev, ...mockBatch]);
-      setIsLoading(false);
-      setHasMore(items.length + 50 < 300);
-    }, 400);
-  };
 
   return (
     <div className="space-y-4 text-[#F3E8D0] animate-fade-in">
@@ -327,14 +309,7 @@ export default function VirtualizedDataList({
                 onClick={() => fetchChunk(true)}
                 className="px-4 py-2 bg-gradient-to-r from-[#D8B56D] to-[#ECC880] text-[#171D2B] font-bold text-xs rounded-lg hover:brightness-110 transition-all cursor-pointer"
               >
-                Retry Supabase Query
-              </button>
-              <button
-                onClick={handleLoadDemoSimulation}
-                className="px-4 py-2 bg-[#17251F] border border-[#D8B56D]/40 text-[#F3E8D0] font-semibold text-xs rounded-lg hover:bg-[#171D2B] transition-all flex items-center gap-1.5 cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-[#D8B56D]" />
-                <span>Simulate 500 Rows</span>
+                Retry Query
               </button>
             </div>
           </div>

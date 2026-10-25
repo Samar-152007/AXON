@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, AlertCircle, Sparkles, Check, HelpCircle } from 'lucide-react';
+import { X, AlertCircle, Sparkles, Scan } from 'lucide-react';
 import { api } from '../api';
+import ProductScanner from './ProductScanner';
 
 const CATEGORIES = [
   'Vegetables',
@@ -39,6 +40,8 @@ export default function ItemModal({ isOpen, onClose, onSave, itemToEdit = null }
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [saving, setSaving] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [scannedMeta, setScannedMeta] = useState(null);
 
   useEffect(() => {
     if (itemToEdit) {
@@ -68,6 +71,7 @@ export default function ItemModal({ isOpen, onClose, onSave, itemToEdit = null }
       });
       setDuplicateWarning(null);
     }
+    setScannedMeta(null);
     setErrorMsg('');
   }, [itemToEdit, isOpen]);
 
@@ -272,22 +276,46 @@ export default function ItemModal({ isOpen, onClose, onSave, itemToEdit = null }
                 <label className="text-xs font-semibold uppercase tracking-wider text-[#D8B56D]">
                   Best-Before Date
                 </label>
-                <label className="text-[11px] text-[#A8B9A5] flex items-center gap-1 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.hasNoExpiry}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        hasNoExpiry: e.target.checked,
-                        expiry_date: e.target.checked ? '' : formData.expiry_date
-                      })
-                    }
-                    className="rounded border-[#D8B56D]/40 text-[#D8B56D] focus:ring-0"
-                  />
-                  <span>No date recorded</span>
-                </label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsScannerOpen(true)}
+                    className="text-[11px] text-[#D8B56D] hover:text-white flex items-center gap-1 cursor-pointer bg-[#111620] px-2 py-0.5 rounded border border-[#D8B56D]/30"
+                    title="Scan expiry date from product packaging via camera"
+                  >
+                    <Scan className="w-3 h-3 text-[#D8B56D]" />
+                    <span>Scan Expiry</span>
+                  </button>
+                  <label className="text-[11px] text-[#A8B9A5] flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.hasNoExpiry}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          hasNoExpiry: e.target.checked,
+                          expiry_date: e.target.checked ? '' : formData.expiry_date
+                        })
+                      }
+                      className="rounded border-[#D8B56D]/40 text-[#D8B56D] focus:ring-0"
+                    />
+                    <span>No date recorded</span>
+                  </label>
+                </div>
               </div>
+              {scannedMeta && (
+                <div className="mb-1 text-[10px] flex items-center gap-1">
+                  {scannedMeta.wasManuallyCompleted ? (
+                    <span className="text-amber-300 bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-500/30">
+                      ⚠️ Incomplete scan (Manually completed & verified)
+                    </span>
+                  ) : (
+                    <span className="text-emerald-300 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                      ✅ Complete date verified from package OCR
+                    </span>
+                  )}
+                </div>
+              )}
               <input
                 type="date"
                 disabled={formData.hasNoExpiry}
@@ -349,6 +377,20 @@ export default function ItemModal({ isOpen, onClose, onSave, itemToEdit = null }
           </div>
         </form>
       </div>
+
+      {/* Embedded Package Scanner */}
+      <ProductScanner
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onExpiryDetected={(detectedDate, meta) => {
+          setFormData((prev) => ({
+            ...prev,
+            expiry_date: detectedDate,
+            hasNoExpiry: false
+          }));
+          setScannedMeta(meta);
+        }}
+      />
     </div>
   );
 }

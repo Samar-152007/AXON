@@ -221,24 +221,40 @@ export default function Inventory({ onOpenAddItem, onEditItem, onOpenOutcome, sh
                   </div>
 
                   {/* Date details */}
-                  <div className="mt-2 space-y-1 text-xs text-[#A8B9A5]">
-                    <div className="flex items-center gap-1.5">
-                      <Calendar className="w-3.5 h-3.5 text-[#D8B56D]/70 shrink-0" />
-                      {hasExpiry ? (
-                        <span>
-                          Best-before: <strong className="text-[#F3E8D0]">{item.expiry_date}</strong>
-                        </span>
-                      ) : (
-                        <span className="text-amber-200/80 italic">
-                          No best-before date recorded
-                        </span>
+                  <div className="mt-2 space-y-1.5 text-xs text-[#A8B9A5]">
+                    <div className="flex items-center justify-between gap-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <Calendar className="w-3.5 h-3.5 text-[#D8B56D]/70 shrink-0" />
+                        {hasExpiry ? (
+                          <span>
+                            Best-before: <strong className="text-[#F3E8D0]">{item.expiry_date}</strong>
+                          </span>
+                        ) : (
+                          <span className="text-amber-300 font-medium flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                            Date missing (Incomplete)
+                          </span>
+                        )}
+                      </div>
+                      {!hasExpiry && onEditItem && (
+                        <button
+                          type="button"
+                          onClick={() => onEditItem(item)}
+                          className="text-[10px] text-[#D8B56D] hover:underline font-semibold cursor-pointer"
+                        >
+                          Complete Date
+                        </button>
                       )}
                     </div>
-                    {item.price && (
-                      <div className="text-[11px] text-[#A8B9A5]">
-                        Price: ${item.price.toFixed(2)}
-                      </div>
-                    )}
+                    <div className="text-[11px] text-[#A8B9A5]">
+                      {item.unit_price !== null && item.unit_price !== undefined && item.unit_price > 0 ? (
+                        <span>Price: ₹{item.unit_price.toFixed(2)}</span>
+                      ) : item.price !== null && item.price !== undefined && item.price > 0 ? (
+                        <span>Price: ₹{item.price.toFixed(2)}</span>
+                      ) : (
+                        <span className="text-[#A8B9A5]/60 italic">Price: Unrecorded</span>
+                      )}
+                    </div>
                     {item.notes && (
                       <p className="text-[11px] text-[#A8B9A5]/80 italic line-clamp-1">
                         "{item.notes}"

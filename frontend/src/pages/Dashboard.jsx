@@ -50,7 +50,7 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
   const [confirming, setConfirming] = useState(false);
   const [ocrNotice, setOcrNotice] = useState(null);
   const [showTextPaste, setShowTextPaste] = useState(false);
-  const [receiptText, setReceiptText] = useState(SAMPLE_RECEIPT);
+  const [receiptText, setReceiptText] = useState('');
 
   // Live Product Expiry Scanner States
   const [scannedExpiryDate, setScannedExpiryDate] = useState('');
@@ -73,6 +73,35 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
     fetchDashboard();
   }, [onDataRefresh]);
 
+  // Helper to map candidates with complete/incomplete data transparency
+  const mapParsedCandidates = (candidatesList, detectedReceiptDate) => {
+    return (candidatesList || []).map((c, i) => {
+      const isPriceMissing = c.unit_price === null || c.unit_price === undefined || c.unit_price === '';
+      const isNameMissing = !c.name || c.name.trim().length < 2;
+      const isExpiryMissing = !c.expiry_date;
+      const isIncomplete = Boolean(c.is_incomplete || isPriceMissing || isNameMissing);
+
+      return {
+        id: i + 1,
+        name: c.name || '',
+        quantity: c.quantity || 1.0,
+        unit: c.unit || 'units',
+        category: c.category || 'Other',
+        unit_price: !isPriceMissing ? c.unit_price : '',
+        expiry_date: c.expiry_date || '',
+        purchase_date: detectedReceiptDate || new Date().toISOString().split('T')[0],
+        is_incomplete: isIncomplete,
+        missing_fields: [
+          ...(isNameMissing ? ['name'] : []),
+          ...(isPriceMissing ? ['unit_price'] : []),
+          ...(isExpiryMissing ? ['expiry_date'] : [])
+        ],
+        confidence: c.confidence || (isIncomplete ? 'Incomplete' : 'Complete'),
+        selected: true
+      };
+    });
+  };
+
   // Handle image capture from camera or file picker
   const handleImageUpload = async (file) => {
     if (!file) return;
@@ -86,15 +115,7 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
       const res = await api.extractReceipt(formData);
 
       if (res.success && res.candidates && res.candidates.length > 0) {
-        const mapped = res.candidates.map((c, i) => ({
-          id: i + 1,
-          name: c.name || 'Grocery Item',
-          quantity: c.quantity || 1.0,
-          unit: c.unit || 'units',
-          category: c.category || 'Other',
-          unit_price: c.unit_price ?? c.price ?? '',
-          selected: true
-        }));
+        const mapped = mapParsedCandidates(res.candidates, res.detected_receipt_date);
         setCandidates(mapped);
         if (showToast) {
           showToast(res.message || `Parsed ${mapped.length} candidate item(s). Review below before saving.`, 'success');
@@ -134,15 +155,7 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
       const res = await api.extractReceipt(formData);
 
       if (res.success && res.candidates && res.candidates.length > 0) {
-        const mapped = res.candidates.map((c, i) => ({
-          id: i + 1,
-          name: c.name || 'Grocery Item',
-          quantity: c.quantity || 1.0,
-          unit: c.unit || 'units',
-          category: c.category || 'Other',
-          unit_price: c.unit_price ?? c.price ?? '',
-          selected: true
-        }));
+        const mapped = mapParsedCandidates(res.candidates, res.detected_receipt_date);
         setCandidates(mapped);
         setShowTextPaste(false);
         if (showToast) {
@@ -162,7 +175,15 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
   const updateCandidate = (index, field, value) => {
     setCandidates((prev) => {
       const copy = [...prev];
-      copy[index] = { ...copy[index], [field]: value };
+      const updatedItem = { ...copy[index], [field]: value };
+      
+      // Dynamically recalculate completeness
+      const isPriceMissing = updatedItem.unit_price === '' || updatedItem.unit_price === null || updatedItem.unit_price === undefined;
+      const isNameMissing = !updatedItem.name || updatedItem.name.trim().length < 2;
+      updatedItem.is_incomplete = isPriceMissing || isNameMissing;
+      updatedItem.confidence = updatedItem.is_incomplete ? 'Incomplete' : 'Complete';
+
+      copy[index] = updatedItem;
       return copy;
     });
   };
@@ -181,6 +202,11 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
         unit: 'units',
         category: 'Produce',
         unit_price: '',
+        expiry_date: '',
+        purchase_date: new Date().toISOString().split('T')[0],
+        is_incomplete: true,
+        missing_fields: ['name', 'unit_price', 'expiry_date'],
+        confidence: 'Incomplete',
         selected: true
       }
     ]);
@@ -198,19 +224,31 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
       return;
     }
 
+    // Never save items with blank names
+    const invalidItems = selected.filter((c) => !c.name || !c.name.trim());
+    if (invalidItems.length > 0) {
+      if (showToast) {
+        showToast('Incomplete information: Please provide a valid grocery name for all selected items before saving.', 'error');
+      }
+      return;
+    }
+
     try {
       setConfirming(true);
       const payload = selected.map((c) => {
-        const priceNum = c.unit_price !== '' && c.unit_price !== null ? parseFloat(c.unit_price) : null;
+        const priceNum = c.unit_price !== '' && c.unit_price !== null && !isNaN(parseFloat(c.unit_price))
+          ? parseFloat(c.unit_price) 
+          : null;
         return {
-          name: c.name.trim() || 'Scanned Grocery Item',
+          name: c.name.trim(),
           quantity: parseFloat(c.quantity) || 1.0,
           unit: c.unit || 'units',
           category: c.category || 'Other',
           unit_price: priceNum,
           price: priceNum,
-          purchase_date: new Date().toISOString().split('T')[0],
-          notes: 'Scanned from receipt / camera capture.'
+          purchase_date: c.purchase_date || new Date().toISOString().split('T')[0],
+          expiry_date: c.expiry_date && c.expiry_date.trim() ? c.expiry_date.trim() : null,
+          notes: c.is_incomplete ? 'Scanned from receipt (Incomplete fields reviewed).' : 'Scanned from receipt.'
         };
       });
 
@@ -486,159 +524,224 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
       {/* ========================================================================= */}
       {/* REVIEW CANDIDATES TABLE (CONFIRMATION STAGE - NEVER AUTO-SAVED)           */}
       {/* ========================================================================= */}
-      {candidates.length > 0 && (
-        <div className="parchment-card p-5 sm:p-6 rounded-2xl space-y-4 border-2 border-[#D8B56D]/50 bg-[#171D2B]/95 shadow-2xl animate-fade-in">
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#D8B56D]/20 pb-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="p-1 rounded bg-[#D8B56D]/20 text-[#D8B56D]">
-                  <Scan className="w-4 h-4" />
-                </span>
-                <h2 className="font-enchanted text-base sm:text-lg font-bold text-[#F3E8D0]">
-                  Review Scanned Candidates ({candidates.length})
-                </h2>
+      {candidates.length > 0 && (() => {
+        const incompleteCandidatesCount = candidates.filter(
+          (c) => c.is_incomplete || !c.unit_price || !c.expiry_date
+        ).length;
+
+        return (
+          <div className="parchment-card p-5 sm:p-6 rounded-2xl space-y-4 border-2 border-[#D8B56D]/50 bg-[#171D2B]/95 shadow-2xl animate-fade-in">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#D8B56D]/20 pb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-1 rounded bg-[#D8B56D]/20 text-[#D8B56D]">
+                    <Scan className="w-4 h-4" />
+                  </span>
+                  <h2 className="font-enchanted text-base sm:text-lg font-bold text-[#F3E8D0]">
+                    Review Scanned Candidates ({candidates.length})
+                  </h2>
+                </div>
+                <p className="text-xs text-[#A8B9A5] mt-0.5">
+                  GrocIQ never saves unconfirmed scans. Review incomplete information and enter missing prices or dates before saving.
+                </p>
               </div>
-              <p className="text-xs text-[#A8B9A5] mt-0.5">
-                GrocIQ never saves unconfirmed scans. Review detected quantities and prices before committing to inventory.
-              </p>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+                <button
+                  type="button"
+                  onClick={addBlankCandidate}
+                  className="px-3 py-1.5 rounded-lg bg-[#111620] hover:bg-[#17251F] border border-[#D8B56D]/30 text-xs font-semibold text-[#D8B56D] transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Row</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCandidates([])}
+                  className="px-3 py-1.5 rounded-lg bg-[#111620] hover:bg-red-950/50 border border-red-500/30 text-xs font-semibold text-red-300 transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Dismiss</span>
+                </button>
+
+                <button
+                  onClick={handleConfirmImport}
+                  disabled={confirming || selectedCount === 0}
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-white font-bold text-xs sm:text-sm rounded-lg shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+                >
+                  <CheckCircle2 className="w-4 h-4 stroke-[2.5]" />
+                  <span>{confirming ? 'Saving...' : `Confirm & Save Selected (${selectedCount})`}</span>
+                </button>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2 self-start sm:self-auto">
-              <button
-                type="button"
-                onClick={addBlankCandidate}
-                className="px-3 py-1.5 rounded-lg bg-[#111620] hover:bg-[#17251F] border border-[#D8B56D]/30 text-xs font-semibold text-[#D8B56D] transition-colors flex items-center gap-1 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Row</span>
-              </button>
+            {/* Incomplete Information Notice Banner */}
+            {incompleteCandidatesCount > 0 && (
+              <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>
+                    <strong>Incomplete Information:</strong> {incompleteCandidatesCount} item(s) have missing prices or expiry dates. Complete the highlighted fields below.
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() + 7);
+                      const plus7 = d.toISOString().split('T')[0];
+                      setCandidates((prev) =>
+                        prev.map((c) => (c.selected && !c.expiry_date ? { ...c, expiry_date: plus7 } : c))
+                      );
+                      if (showToast) showToast('Filled +7d expiry for selected items without a date.', 'info');
+                    }}
+                    className="px-2.5 py-1 rounded bg-[#111620] hover:bg-[#D8B56D] hover:text-[#171D2B] border border-[#D8B56D]/30 text-[11px] font-semibold text-[#D8B56D] transition-colors cursor-pointer"
+                  >
+                    Quick-Set Expiry (+7d)
+                  </button>
+                </div>
+              </div>
+            )}
 
-              <button
-                type="button"
-                onClick={() => setCandidates([])}
-                className="px-3 py-1.5 rounded-lg bg-[#111620] hover:bg-red-950/50 border border-red-500/30 text-xs font-semibold text-red-300 transition-colors flex items-center gap-1 cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Dismiss</span>
-              </button>
-
-              <button
-                onClick={handleConfirmImport}
-                disabled={confirming || selectedCount === 0}
-                className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-white font-bold text-xs sm:text-sm rounded-lg shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
-              >
-                <CheckCircle2 className="w-4 h-4 stroke-[2.5]" />
-                <span>{confirming ? 'Saving...' : `Confirm & Save Selected (${selectedCount})`}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-[#F3E8D0]">
-              <thead>
-                <tr className="border-b border-[#D8B56D]/20 text-[#D8B56D] uppercase text-[10px] tracking-wider font-enchanted">
-                  <th className="py-2 px-2 w-10 text-center">
-                    <button
-                      type="button"
-                      onClick={() => toggleSelectAll(!allSelected)}
-                      className="cursor-pointer text-[#D8B56D] hover:text-white"
-                      title={allSelected ? 'Deselect All' : 'Select All'}
-                    >
-                      {allSelected ? <CheckSquare className="w-4 h-4 text-emerald-400" /> : <Square className="w-4 h-4 text-[#A8B9A5]" />}
-                    </button>
-                  </th>
-                  <th className="py-2 px-3">Item Name</th>
-                  <th className="py-2 px-3 w-28">Quantity</th>
-                  <th className="py-2 px-3 w-32">Category</th>
-                  <th className="py-2 px-3 w-28">Unit Price (₹)</th>
-                  <th className="py-2 px-2 w-10 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#D8B56D]/10">
-                {candidates.map((c, idx) => (
-                  <tr key={c.id || idx} className="hover:bg-[#111620]/60 transition-colors">
-                    <td className="py-2 px-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={c.selected}
-                        onChange={(e) => updateCandidate(idx, 'selected', e.target.checked)}
-                        className="rounded border-[#D8B56D]/40 text-[#D8B56D] focus:ring-0 cursor-pointer accent-[#D8B56D]"
-                      />
-                    </td>
-                    <td className="py-2 px-3">
-                      <input
-                        type="text"
-                        value={c.name}
-                        onChange={(e) => updateCandidate(idx, 'name', e.target.value)}
-                        placeholder="Item name"
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none"
-                      />
-                    </td>
-                    <td className="py-2 px-3">
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          step="any"
-                          min="0.1"
-                          value={c.quantity}
-                          onChange={(e) => updateCandidate(idx, 'quantity', e.target.value)}
-                          className="w-16 px-2 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none"
-                        />
-                        <input
-                          type="text"
-                          value={c.unit}
-                          onChange={(e) => updateCandidate(idx, 'unit', e.target.value)}
-                          placeholder="unit"
-                          className="w-14 px-1.5 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#A8B9A5] focus:border-[#D8B56D] focus:outline-none text-center"
-                        />
-                      </div>
-                    </td>
-                    <td className="py-2 px-3">
-                      <select
-                        value={c.category}
-                        onChange={(e) => updateCandidate(idx, 'category', e.target.value)}
-                        className="w-full px-2 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none"
-                      >
-                        {['Vegetables', 'Fruits', 'Dairy', 'Grains', 'Pantry', 'Bakery', 'Frozen', 'Meat & Seafood', 'Beverages', 'Other'].map((cat) => (
-                          <option key={cat} value={cat} className="bg-[#171D2B]">
-                            {cat}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-2 px-3">
-                      <div className="relative">
-                        <span className="absolute left-2.5 top-1.5 text-xs text-[#D8B56D] font-bold">₹</span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={c.unit_price}
-                          onChange={(e) => updateCandidate(idx, 'unit_price', e.target.value)}
-                          placeholder="0.00"
-                          className="w-full pl-6 pr-2 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none"
-                        />
-                      </div>
-                    </td>
-                    <td className="py-2 px-2 text-center">
+            {/* Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-[#F3E8D0]">
+                <thead>
+                  <tr className="border-b border-[#D8B56D]/20 text-[#D8B56D] uppercase text-[10px] tracking-wider font-enchanted">
+                    <th className="py-2 px-2 w-10 text-center">
                       <button
                         type="button"
-                        onClick={() => removeCandidate(idx)}
-                        className="text-[#A8B9A5] hover:text-red-400 p-1.5 cursor-pointer rounded hover:bg-red-950/40 transition-colors"
-                        title="Remove row"
+                        onClick={() => toggleSelectAll(!allSelected)}
+                        className="cursor-pointer text-[#D8B56D] hover:text-white"
+                        title={allSelected ? 'Deselect All' : 'Select All'}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        {allSelected ? <CheckSquare className="w-4 h-4 text-emerald-400" /> : <Square className="w-4 h-4 text-[#A8B9A5]" />}
                       </button>
-                    </td>
+                    </th>
+                    <th className="py-2 px-2 w-24">Status</th>
+                    <th className="py-2 px-3">Item Name</th>
+                    <th className="py-2 px-3 w-28">Quantity</th>
+                    <th className="py-2 px-3 w-32">Category</th>
+                    <th className="py-2 px-3 w-28">Unit Price (₹)</th>
+                    <th className="py-2 px-3 w-36">Best-Before Date</th>
+                    <th className="py-2 px-2 w-10 text-center">Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-[#D8B56D]/10">
+                  {candidates.map((c, idx) => (
+                    <tr key={c.id || idx} className="hover:bg-[#111620]/60 transition-colors">
+                      <td className="py-2 px-2 text-center">
+                        <input
+                          type="checkbox"
+                          checked={c.selected}
+                          onChange={(e) => updateCandidate(idx, 'selected', e.target.checked)}
+                          className="rounded border-[#D8B56D]/40 text-[#D8B56D] focus:ring-0 cursor-pointer accent-[#D8B56D]"
+                        />
+                      </td>
+                      <td className="py-2 px-2">
+                        {c.is_incomplete || !c.unit_price || !c.expiry_date ? (
+                          <span 
+                            className="text-[10px] text-amber-300 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-500/30 whitespace-nowrap"
+                            title={c.missing_fields?.length ? `Missing: ${c.missing_fields.join(', ')}` : 'Incomplete fields'}
+                          >
+                            ⚠️ Incomplete
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap">
+                            ✅ Complete
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3">
+                        <input
+                          type="text"
+                          value={c.name}
+                          onChange={(e) => updateCandidate(idx, 'name', e.target.value)}
+                          placeholder="Required: Item name"
+                          className={`w-full px-2.5 py-1.5 rounded-lg bg-[#111620] text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none ${
+                            !c.name?.trim() ? 'border-2 border-amber-500/70' : 'border border-[#D8B56D]/25'
+                          }`}
+                        />
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            step="any"
+                            min="0.1"
+                            value={c.quantity}
+                            onChange={(e) => updateCandidate(idx, 'quantity', e.target.value)}
+                            className="w-16 px-2 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none"
+                          />
+                          <input
+                            type="text"
+                            value={c.unit}
+                            onChange={(e) => updateCandidate(idx, 'unit', e.target.value)}
+                            placeholder="unit"
+                            className="w-14 px-1.5 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#A8B9A5] focus:border-[#D8B56D] focus:outline-none text-center"
+                          />
+                        </div>
+                      </td>
+                      <td className="py-2 px-3">
+                        <select
+                          value={c.category}
+                          onChange={(e) => updateCandidate(idx, 'category', e.target.value)}
+                          className="w-full px-2 py-1.5 rounded-lg bg-[#111620] border border-[#D8B56D]/25 text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none"
+                        >
+                          {['Vegetables', 'Fruits', 'Dairy', 'Grains', 'Pantry', 'Bakery', 'Frozen', 'Meat & Seafood', 'Beverages', 'Other'].map((cat) => (
+                            <option key={cat} value={cat} className="bg-[#171D2B]">
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="relative">
+                          <span className="absolute left-2.5 top-1.5 text-xs text-[#D8B56D] font-bold">₹</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={c.unit_price}
+                            onChange={(e) => updateCandidate(idx, 'unit_price', e.target.value)}
+                            placeholder="Optional"
+                            className={`w-full pl-6 pr-2 py-1.5 rounded-lg bg-[#111620] text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none ${
+                              c.unit_price === '' ? 'border border-amber-500/40' : 'border border-[#D8B56D]/25'
+                            }`}
+                          />
+                        </div>
+                      </td>
+                      <td className="py-2 px-3">
+                        <input
+                          type="date"
+                          value={c.expiry_date || ''}
+                          onChange={(e) => updateCandidate(idx, 'expiry_date', e.target.value)}
+                          className={`w-full px-2 py-1.5 rounded-lg bg-[#111620] text-xs text-[#F3E8D0] focus:border-[#D8B56D] focus:outline-none ${
+                            !c.expiry_date ? 'border border-amber-500/40' : 'border border-[#D8B56D]/25'
+                          }`}
+                        />
+                      </td>
+                      <td className="py-2 px-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => removeCandidate(idx)}
+                          className="text-[#A8B9A5] hover:text-red-400 p-1.5 cursor-pointer rounded hover:bg-red-950/40 transition-colors"
+                          title="Remove row"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ========================================================================= */}
       {/* 4 PRIMARY METRIC CARDS                                                    */}
@@ -948,10 +1051,25 @@ export default function Dashboard({ setTab, onOpenAddItem, onOpenOutcome, onData
       <ProductScanner
         isOpen={isExpiryScannerOpen}
         onClose={() => setIsExpiryScannerOpen(false)}
-        onExpiryDetected={(date) => {
+        onExpiryDetected={(date, meta) => {
           setScannedExpiryDate(date);
           if (showToast) {
-            showToast(`Product expiry date auto-filled: ${date}`, 'success');
+            showToast(`Product expiry date captured: ${date}`, 'success');
+          }
+          if (candidates.length > 0) {
+            setCandidates((prev) =>
+              prev.map((c) => (c.selected && !c.expiry_date ? { ...c, expiry_date: date } : c))
+            );
+            if (showToast) {
+              showToast(`Applied expiry date (${date}) to selected candidate item(s).`, 'success');
+            }
+          } else if (onOpenAddItem) {
+            onOpenAddItem({
+              expiry_date: date,
+              notes: meta?.wasManuallyCompleted 
+                ? 'Scanned via camera OCR (Manually verified).' 
+                : 'Scanned via camera OCR.'
+            });
           }
         }}
         showToast={showToast}

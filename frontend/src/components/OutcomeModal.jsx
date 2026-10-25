@@ -9,10 +9,8 @@ const QUICK_REASONS = {
 };
 
 export default function OutcomeModal({ isOpen, onClose, item, onSuccess }) {
-  if (!isOpen || !item) return null;
-
   const [outcomeType, setOutcomeType] = useState('consumed');
-  const [quantity, setQuantity] = useState(item.quantity || 1);
+  const [quantity, setQuantity] = useState(item?.quantity || 1);
   const [reason, setReason] = useState('');
   const [dateStr, setDateStr] = useState(new Date().toISOString().split('T')[0]);
   const [submitting, setSubmitting] = useState(false);
@@ -27,6 +25,8 @@ export default function OutcomeModal({ isOpen, onClose, item, onSuccess }) {
       setErrorMsg('');
     }
   }, [item, isOpen]);
+
+  if (!isOpen || !item) return null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
