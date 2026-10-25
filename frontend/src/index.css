@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --forest: #17251F;
+    --midnight: #171D2B;
+    --burgundy: #5B1F32;
+    --gold: #D8B56D;
+    --parchment: #F3E8D0;
+    --sage: #A8B9A5;
+  }
+
+  body {
+    background-color: #111620;
+    color: #F3E8D0;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, .font-enchanted {
+    font-family: 'Cinzel', Georgia, serif;
+    letter-spacing: 0.02em;
+  }
+}
+
+/* Custom enchanted styling utilities */
+.parchment-card {
+  background: linear-gradient(135deg, rgba(23, 29, 43, 0.85) 0%, rgba(23, 37, 31, 0.75) 100%);
+  border: 1px solid rgba(216, 181, 109, 0.22);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+}
+
+.parchment-card:hover {
+  border-color: rgba(216, 181, 109, 0.4);
+}
+
+.gold-glow {
+  box-shadow: 0 0 20px rgba(216, 181, 109, 0.18);
+}
+
+.gold-glow-strong {
+  box-shadow: 0 0 25px rgba(216, 181, 109, 0.35);
+}
+
+.candle-glow {
+  box-shadow: 0 0 15px rgba(236, 200, 128, 0.15);
+}
+
+/* Custom Scrollbar for Enchanted Library Feel */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #111620;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(216, 181, 109, 0.3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(216, 181, 109, 0.6);
+}

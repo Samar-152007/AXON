@@ -1,0 +1,11 @@
+{
+  "name": "grociq-workspace",
+  "version": "1.0.0",
+  "description": "GrocIQ AI-Powered Grocery Intelligence & Supabase Integration Workspace",
+  "scripts": {
+    "test:integration": "python -m pytest backend/tests/test_integration.py -v",
+    "test": "npm run test:integration",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build:frontend": "npm run build --prefix frontend"
+  }
+}
