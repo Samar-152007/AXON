@@ -38,47 +38,111 @@ function normalizeYear(yearStr) {
 /**
  * Returns structured date result with explicit completeness and confidence metadata.
  */
-function createDateResult(year, month, day = null, rawMatch = '', hasPrefix = false) {
+function createDateResult(year, month, day = null, rawMatch = '', hasPrefix = false, options = {}) {
   const normYear = normalizeYear(year);
   const normMonth = Math.min(Math.max(parseInt(month, 10), 1), 12);
   const hasExactDay = day !== null && day !== undefined && String(day).trim() !== '';
 
-  // If day is missing (e.g. "Oct 2026" or "12/25"), we calculate end of month as a suggestion,
-  // but explicitly flag that the day is incomplete / inferred so the user is prompted to confirm or adjust.
+  // If day is missing (e.g. "Oct 2026" or "02/26"), standard grocery/packaging rule is end of month.
   let normDay;
   if (hasExactDay) {
     normDay = Math.min(Math.max(parseInt(day, 10), 1), 31);
   } else {
-    // End of month recommendation
+    // End of month
     normDay = new Date(normYear, normMonth, 0).getDate();
   }
 
-  const mm = String(normMonth).padStart(2, '0');
-  const dd = String(normDay).padStart(2, '0');
-  const formatted = `${normYear}-${mm}-${dd}`;
-  const dateObj = new Date(normYear, normMonth - 1, normDay);
+  // Handle shelf life addition (e.g. Mfg: 02/26 + 24 Months = 02/28)
+  let expiryYear = normYear;
+  let expiryMonth = normMonth;
+  let expiryDay = normDay;
+  let isShelfLifeCalculation = false;
+  let mfgDateStr = null;
 
-  const isComplete = hasExactDay;
-  const confidence = isComplete 
-    ? (hasPrefix ? 'HIGH' : 'MEDIUM') 
-    : 'PARTIAL';
+  if (options.shelfLifeMonths && options.shelfLifeMonths > 0) {
+    isShelfLifeCalculation = true;
+    mfgDateStr = `${normYear}-${String(normMonth).padStart(2, '0')}-${String(normDay).padStart(2, '0')}`;
+    
+    // Add months
+    const totalMonths = normMonth - 1 + options.shelfLifeMonths;
+    expiryYear = normYear + Math.floor(totalMonths / 12);
+    expiryMonth = (totalMonths % 12) + 1;
+    if (!hasExactDay) {
+      expiryDay = new Date(expiryYear, expiryMonth, 0).getDate();
+    } else {
+      expiryDay = Math.min(normDay, new Date(expiryYear, expiryMonth, 0).getDate());
+    }
+  }
+
+  const mm = String(expiryMonth).padStart(2, '0');
+  const dd = String(expiryDay).padStart(2, '0');
+  const formatted = `${expiryYear}-${mm}-${dd}`;
+  const dateObj = new Date(expiryYear, expiryMonth - 1, expiryDay);
+
+  // In packaged goods, MM/YY without day is complete package expiry (end-of-month)
+  const isComplete = true;
+  const confidence = hasPrefix || isShelfLifeCalculation ? 'HIGH' : (hasExactDay ? 'HIGH' : 'MEDIUM');
+
+  let notice = null;
+  if (isShelfLifeCalculation) {
+    notice = `Mfg date (${String(normMonth).padStart(2, '0')}/${normYear}) + ${options.shelfLifeMonths} months shelf life detected → Expiry: ${formatted}.`;
+  } else if (!hasExactDay) {
+    notice = `Product expiry detected as ${mm}/${expiryYear}. End-of-month (${formatted}) applied.`;
+  }
 
   return {
     formatted,
     date: dateObj,
-    year: normYear,
-    month: normMonth,
-    day: normDay,
+    year: expiryYear,
+    month: expiryMonth,
+    day: expiryDay,
     hasExactDay,
     isComplete,
+    isEndOfMonth: !hasExactDay,
     confidence,
     missingFields: hasExactDay ? [] : ['day'],
     rawMatch,
     hasPrefix,
-    notice: isComplete 
-      ? null 
-      : `Incomplete date: Month (${mm}) and Year (${normYear}) detected without day. End-of-month suggested (${formatted}) — please confirm or adjust.`
+    isShelfLifeCalculation,
+    mfgDate: mfgDateStr,
+    shelfLifeMonths: options.shelfLifeMonths || null,
+    notice
   };
+}
+
+/**
+ * Pre-processes OCR raw text to fix common inkjet/dot-matrix scan artifacts:
+ * - 02/2¢, 02/2c, 02/2G -> 02/26 (cents symbol, 'c', 'G' for dot-matrix 6)
+ * - 02/2S, 02/2s -> 02/25
+ * - 02/2Z -> 02/22
+ * - 02/2B -> 02/28
+ * - O2/26 -> 02/26
+ * - Spaces around slashes / separators
+ */
+function normalizeOcrArtifacts(text) {
+  if (!text) return '';
+  let s = text.replace(/[\r\n]+/g, ' ');
+
+  // Fix spaces between numbers and date separators: "02 / 26" -> "02/26", "02 . 26" -> "02.26"
+  s = s.replace(/(\d{1,2})\s*([\/.\-:])\s*(\d{2,4})/g, '$1$2$3');
+
+  // Fix dot-matrix 6 recognized as ¢, c, C, G after 2-digit decade (e.g. '02/2¢' or '02/2c')
+  // Note: ¢ is not a word char, so do not use \b after it. Use (?![0-9a-zA-Z])
+  s = s.replace(/(\b[oO0]?[1-9]|1[0-2])[\s\/\.\-:']+(2[¢cCbBG])(?![0-9a-zA-Z])/g, '$1/26');
+
+  // Fix dot-matrix 5 recognized as S/s (e.g. '02/2S' -> '02/25')
+  s = s.replace(/(\b[oO0]?[1-9]|1[0-2])[\s\/\.\-:']+(2[sS])(?![0-9a-zA-Z])/g, '$1/25');
+
+  // Fix dot-matrix 8 recognized as B (e.g. '02/2B' -> '02/28')
+  s = s.replace(/(\b[oO0]?[1-9]|1[0-2])[\s\/\.\-:']+(2[B])(?![0-9a-zA-Z])/g, '$1/28');
+
+  // Fix letter O in month: e.g. "O2/26" -> "02/26", "O8/25" -> "08/25"
+  s = s.replace(/\b[oO]([1-9])[\s\/\.\-:']+(\d{2,4})(?![0-9a-zA-Z])/g, '0$1/$2');
+
+  // Clean leading punctuation on dates: ": 02/26" -> "02/26"
+  s = s.replace(/(?:^|\s)[:\-\.,|]\s*(0?[1-9]|1[0-2])[\/\.\-:'](\d{2,4})\b/g, ' $1/$2');
+
+  return s;
 }
 
 /**
@@ -91,7 +155,13 @@ function createDateResult(year, month, day = null, rawMatch = '', hasPrefix = fa
 export function parseExpiryDate(rawText) {
   if (!rawText || typeof rawText !== 'string' || !rawText.trim()) return null;
 
-  const cleanText = rawText.replace(/\r\n/g, ' ').replace(/\n/g, ' ').trim();
+  const normalized = normalizeOcrArtifacts(rawText);
+  const cleanText = normalized.trim();
+
+  // Detect shelf-life indicator: e.g. "24 Months From Mfg", "12 Months from packaging", "Best before 6 months"
+  const shelfLifeRegex = /(\d{1,2})\s*(?:months?|mths?|m)\s*(?:from\s*)?(?:mfg|mfd|date\s*of\s*mfg|pkd|packaging|pack|mfg\.)?/i;
+  const shelfLifeMatch = cleanText.match(shelfLifeRegex);
+  const shelfLifeMonths = shelfLifeMatch ? parseInt(shelfLifeMatch[1], 10) : null;
 
   // 1. Check explicitly prefixed expiry dates first (EXP, USE BY, BEST BEFORE, BB)
   // 1a. Text month with prefix: e.g. "Use By: 25 Oct 2026", "EXP Oct 2026", "BB 15-NOV-2026"
@@ -122,7 +192,7 @@ export function parseExpiryDate(rawText) {
   }
 
   // 1c. Prefixed numeric patterns: e.g. "EXP 12/25", "EXP. 12/2026", "USE BY: 25/10/2026", "BEST BEFORE 28.02.26"
-  const prefixNumericRegex = /(?:EXP(?:IRY)?|USE\s*BY|BEST\s*(?:BEFORE|BY)|BB|BBD)[\s:\-\/]+(\d{1,2})[\/\.\-](\d{1,2})(?:[\/\.\-](\d{2,4}))?\b/i;
+  const prefixNumericRegex = /(?:EXP(?:IRY)?|USE\s*BY|BEST\s*(?:BEFORE|BY)|BB|BBD)[\s:\-\/]+(\d{1,2})[\/\.\-:'](\d{1,2})(?:[\/\.\-:'](\d{2,4}))?\b/i;
   const prefixMatch = cleanText.match(prefixNumericRegex);
   if (prefixMatch) {
     const part1 = prefixMatch[1];
@@ -137,7 +207,7 @@ export function parseExpiryDate(rawText) {
         return createDateResult(part3, part1, part2, prefixMatch[0], true);
       }
     } else {
-      // Format: MM/YY or MM/YYYY (day is incomplete)
+      // Format: MM/YY or MM/YYYY
       return createDateResult(part2, part1, null, prefixMatch[0], true);
     }
   }
@@ -157,7 +227,7 @@ export function parseExpiryDate(rawText) {
     const year = textMatch[3];
     const month = MONTH_MAP[monthStr];
     if (month && year) {
-      return createDateResult(year, month, day, textMatch[0], false);
+      return createDateResult(year, month, day, textMatch[0], false, { shelfLifeMonths });
     }
   }
 
@@ -165,21 +235,21 @@ export function parseExpiryDate(rawText) {
   const isoRegex = /\b(20\d{2})[\/\-\.](0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])\b/;
   const isoMatch = cleanText.match(isoRegex);
   if (isoMatch) {
-    return createDateResult(isoMatch[1], isoMatch[2], isoMatch[3], isoMatch[0], false);
+    return createDateResult(isoMatch[1], isoMatch[2], isoMatch[3], isoMatch[0], false, { shelfLifeMonths });
   }
 
   // 4. Standalone Full Date: DD/MM/YYYY or DD-MM-YYYY
-  const fullDateRegex = /\b(0?[1-9]|[12]\d|3[01])[\/\.\-](0?[1-9]|1[0-2])[\/\.\-](20\d{2}|\d{2})\b/;
+  const fullDateRegex = /\b(0?[1-9]|[12]\d|3[01])[\/\.\-:'](0?[1-9]|1[0-2])[\/\.\-:'](20\d{2}|\d{2})\b/;
   const fullDateMatch = cleanText.match(fullDateRegex);
   if (fullDateMatch) {
-    return createDateResult(fullDateMatch[3], fullDateMatch[2], fullDateMatch[1], fullDateMatch[0], false);
+    return createDateResult(fullDateMatch[3], fullDateMatch[2], fullDateMatch[1], fullDateMatch[0], false, { shelfLifeMonths });
   }
 
-  // 5. Standalone MM/YY or MM/YYYY: e.g. "12/25", "08/26", "11/2026"
-  const shortDateRegex = /\b(0[1-9]|1[0-2])[\/\.\-](20\d{2}|2\d|3\d)\b/;
+  // 5. Standalone MM/YY or MM/YYYY: e.g. "02/26", "12/25", "08/26", "11/2026"
+  const shortDateRegex = /\b(0?[1-9]|1[0-2])[\/\.\-:'](20\d{2}|2\d|3\d)\b/;
   const shortDateMatch = cleanText.match(shortDateRegex);
   if (shortDateMatch) {
-    return createDateResult(shortDateMatch[2], shortDateMatch[1], null, shortDateMatch[0], false);
+    return createDateResult(shortDateMatch[2], shortDateMatch[1], null, shortDateMatch[0], false, { shelfLifeMonths });
   }
 
   // 6. Partial Fragment Detection: Look for lone EXP header or Year only
