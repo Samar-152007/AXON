@@ -33,7 +33,12 @@ DEFAULT_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
 ]
 env_origins = os.environ.get("ALLOWED_ORIGINS")
-allowed_origins = [o.strip() for o in env_origins.split(",") if o.strip()] if env_origins else DEFAULT_ALLOWED_ORIGINS
+if os.environ.get("VERCEL"):
+    allowed_origins = ["*"]
+elif env_origins:
+    allowed_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+else:
+    allowed_origins = DEFAULT_ALLOWED_ORIGINS
 
 app.add_middleware(
     CORSMiddleware,

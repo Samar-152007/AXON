@@ -3,7 +3,12 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
-DB_PATH = os.environ.get("GROCIQ_DB_PATH", os.path.join(os.path.dirname(os.path.dirname(__file__)), "grociq.db"))
+default_db = (
+    "/tmp/grociq.db"
+    if os.environ.get("VERCEL")
+    else os.path.join(os.path.dirname(os.path.dirname(__file__)), "grociq.db")
+)
+DB_PATH = os.environ.get("GROCIQ_DB_PATH", default_db)
 
 def get_db_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)

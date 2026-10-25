@@ -1,5 +1,6 @@
-// GrocIQ REST API Client
-const BASE_URL = '/api';
+const BASE_URL = (typeof process !== 'undefined' && process.env?.BACKEND_URL)
+  ? (process.env.BACKEND_URL.replace(/\/+$/, '') + '/api')
+  : (import.meta.env?.VITE_API_BASE_URL || '/api');
 
 async function request(endpoint, options = {}) {
   const url = `${BASE_URL}${endpoint}`;
